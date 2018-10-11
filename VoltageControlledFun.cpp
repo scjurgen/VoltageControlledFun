@@ -10,6 +10,7 @@
 #include <SPI.h>
 #include <SerialFlash.h>
 #include <Wire.h>
+#include <EEPROM.h>
 
 AudioInputI2S            i2sIn;
 AudioSynthWaveformDc     dcStage1;
@@ -70,6 +71,9 @@ int       potPins[4]     = {6, 2, 7, 3};
 const int c_centerButton = 2;
 Bounce    centerButton;
 
+int lineInLevel  = 13;
+int lineOutLevel = 30;
+
 bool  isFlipping = false;
 float mix        = 1.0;
 float delayGain  = 0.55;
@@ -113,7 +117,7 @@ void setAlgorithm(int algo)
     algorithm = algo;
     if (algorithm % 2 == 1)
     {
-        delayGain = 0.55;
+        delayGain = 0.55; // we could make the delay depending on the position
     }
     else
     {
@@ -129,19 +133,47 @@ void showRgb(int r, int g, int b)
     analogWrite(pinRGBLed[2], b * 5);
 }
 
+int calibrateInputPressCount = 0;
+
+void calibrateLedPlay()
+{
+    delay(50);
+    showRgb(1, 0, 0);
+    delay(50);
+    showRgb(1, 1, 0);
+    delay(50);
+    showRgb(0, 1, 0);
+    delay(50);
+    showRgb(0, 1, 1);
+    delay(50);
+    showRgb(0, 0, 1);
+    delay(50);
+    showRgb(1, 0, 1);
+}
+
 void setup()
 {
-    pinMode(c_centerButton, INPUT_PULLUP);
-    centerButton.attach(c_centerButton);
-    centerButton.interval(15); // interval in ms
-    pinMode(c_centerButton, INPUT_PULLUP);
-
+    Serial.begin(115200);
+    lineInLevel  = EEPROM.read(0);
+    lineOutLevel = EEPROM.read(2);
+    Serial.print("Line in level: ");
+    Serial.println(lineInLevel);
     for (int i = 0; i < 3; ++i)
     {
         pinMode(pinRGBLed[i], OUTPUT);
         analogWrite(pinRGBLed[i], 0);
     }
-    // analogWrite(pinRGBLed[1], 3);
+    pinMode(c_centerButton, INPUT_PULLUP);
+    if (digitalRead(c_centerButton) == 0)
+    {
+        calibrateLedPlay();
+        calibrateInputPressCount = 3;
+        lineInLevel              = 15;
+    }
+
+    centerButton.attach(c_centerButton);
+    centerButton.interval(15); // interval in ms
+    pinMode(c_centerButton, INPUT_PULLUP);
 
     AudioNoInterrupts();
     const unsigned int blocks = 44100 / 128 * 200 / 1000;
@@ -155,8 +187,8 @@ void setup()
     sgtl5000_1.audioProcessorDisable();
     // sgtl5000_1.adcHighPassFilterDisable();
     sgtl5000_1.muteHeadphone();
-    sgtl5000_1.lineInLevel(13);  // 0.34 Volts --> 1.18647^(6.65-n)
-    sgtl5000_1.lineOutLevel(30); // 1.22V  --> 1.057255^(33.7-n)
+    sgtl5000_1.lineInLevel(lineInLevel); // 13 -> 0.34 Volts --> 1.18647^(6.65-n)
+    sgtl5000_1.lineOutLevel(30);         // 1.22V  --> 1.057255^(33.7-n)
     sgtl5000_1.inputSelect(AUDIO_INPUT_LINEIN);
     filterLeftStage1.octaveControl(2);
     filterLeftStage1.frequency(400);
@@ -235,6 +267,18 @@ void checkCenterButton()
         lastCenterButton = value;
         if (value == 0)
         {
+            if (calibrateInputPressCount)
+            {
+                --calibrateInputPressCount;
+                if (!calibrateInputPressCount)
+                {
+                    EEPROM.write(0, lineInLevel);
+                    Serial.printf("Line in level written to eeprom: %f\n", lineInLevel);
+                    EEPROM.write(2, lineOutLevel);
+                    Serial.printf("Line out level written to eeprom: %f\n", lineOutLevel);
+                }
+            }
+
             isFlipping = !isFlipping;
             setMix();
             longPressStart = millis();
@@ -248,10 +292,10 @@ void checkCenterButton()
     }
 }
 
-PotReader prFrequency(6, true, 1023);
-PotReader prDivider(2, true, 1023);
-PotReader prAlgorithm(7, true, 1023);
-PotReader prMix(3, true, 1023);
+PotReader prFrequency(D6, true, 1023);
+PotReader prDivider(D2, true, 1023);
+PotReader prAlgorithm(D7, true, 1023);
+PotReader prMix(D3, true, 1023);
 
 float dividers[] = {1.0, 0.5, 0.25, 0.125};
 
@@ -315,10 +359,28 @@ void loop()
     {
         setAlgorithm(prAlgorithm.read() / 1024.0 * ALGOCOUNT);
     }
-    if (prMix.hasNewValueAndResetState())
+    if (calibrateInputPressCount)
     {
-        mix = prMix.read() / 1024.0;
-        setMix();
+        calibratedLedPlay();
+        if (prMix.hasNewValueAndResetState())
+        {
+            lineOutLevel = 13 + (32 - 13) * (prMix.read() / 1024.0);
+            if (lineOutLevel < 13)
+                lineOutLevel = 13;
+            if (lineOutLevel > 32)
+                lineOutLevel = 31;
+            AudioNoInterrupts();
+            sgtl5000_1.lineOutLevel(lineOutLevel);
+            AudioInterrupts();
+        }
+    }
+    else
+    {
+        if (prMix.hasNewValueAndResetState())
+        {
+            mix = prMix.read() / 1024.0;
+            setMix();
+        }
     }
     if (prFrequency.hasNewValueAndResetState())
     {
@@ -336,6 +398,20 @@ void loop()
         {
             lastPeak = newPeak;
             Serial.printf("Peak: %f\n", log(lastPeak) / log(2) * 6);
+            if (calibrateInputPressCount)
+            {
+                if (lastPeak > 0.85)
+                {
+                    --lineInLevel;
+                    if (lineInLevel < 0)
+                        lineInLevel = 0;
+                    Serial.printf("Reducing line in level to %d", lineInLevel);
+                    AudioNoInterrupts();
+                    sgtl5000_1.lineInLevel(lineInLevel); // 0.34 Volts --> 1.18647^(6.65-n)
+                    AudioInterrupts();
+                    lastPeak = 0.0;
+                }
+            }
         }
     }
     if (millis() >= nextAnalysis)

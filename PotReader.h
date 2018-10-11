@@ -2,7 +2,7 @@
 #include "Arduino.h"
 
 // Low pass bessel filter order=1 alpha1=0.02118934
-// parameters choosen to have efficient coeeficients
+// parameters choosen to have efficient coefficients
 class ChFilter
 {
   public:
@@ -84,7 +84,7 @@ class PotReader
         return tmp;
     }
 
-    int clamp(int in)
+    int clamp(int in) const
     {
         if (in < 0)
             return 0;
@@ -93,7 +93,7 @@ class PotReader
         return in;
     }
 
-    int read()
+    int read() const
     {
         if (m_inverse)
             return clamp(c_maxValue - m_lastValue);

@@ -67,7 +67,7 @@ class PotReader
             {
                 m_newValue  = true;
                 m_lastValue = valuePot;
-                Serial.printf("new value: %d\n", m_lastValue);
+                //Serial.printf("new value: %d\n", m_lastValue);
             }
         }
     }

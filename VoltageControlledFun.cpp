@@ -34,6 +34,7 @@ AudioMixer4 mixerFinal;
 
 AudioOutputI2S   i2sOut;
 AudioAnalyzePeak peakIn;
+AudioAnalyzePeak peakOut;
 
 AudioConnection patchCordPeak(i2sIn, 0, peakIn, 0);
 AudioConnection patchInputFilter(i2sIn, 0, inputFilter, 0);
@@ -63,6 +64,7 @@ AudioConnection patchCord22(mixerFilters, 0, mixerFinal, 0);
 AudioConnection patchCord23(mixerFilters, 0, mixerFinal, 1);
 AudioConnection patchCord20(mixerFinal, 0, i2sOut, 0);
 AudioConnection patchCord21(mixerFinal, 0, i2sOut, 1);
+AudioConnection patchCordPeakOut(mixerFinal, 0,  peakOut, 0);
 
 AudioControlSGTL5000 sgtl5000_1;
 
@@ -90,8 +92,8 @@ void setMix()
         mixerFilters.gain(1, fMixEffect);
         mixerFilters.gain(2, fMixEffect);
         mixerFilters.gain(3, fMixEffect);
-        mixerFinal.gain(0, 1.0);
-        mixerFinal.gain(1, 1.0);
+        mixerFinal.gain(0, 0.5);
+        mixerFinal.gain(1, 0.5);
         mixerFinal.gain(2, fMixPure);
         mixerFinal.gain(3, fMixPure * delayGain);
     }
@@ -135,29 +137,40 @@ void showRgb(int r, int g, int b)
 
 int calibrateInputPressCount = 0;
 
+
+
 void calibrateLedPlay()
 {
-    delay(50);
-    showRgb(1, 0, 0);
-    delay(50);
-    showRgb(1, 1, 0);
-    delay(50);
-    showRgb(0, 1, 0);
-    delay(50);
-    showRgb(0, 1, 1);
-    delay(50);
-    showRgb(0, 0, 1);
-    delay(50);
-    showRgb(1, 0, 1);
+    static int step = 0;
+    static int tNext = 0;
+    if (millis()<tNext)
+        return;
+    tNext = millis()+50;
+    step++;
+    switch (step)
+    {
+        case 0: showRgb(1, 0, 0); break;
+        case 1: showRgb(1, 1, 0); break;
+        case 2: showRgb(0, 1, 0); break;
+        case 3: showRgb(0, 1, 1); break;
+        case 4: showRgb(0, 0, 1); break;
+        case 5: showRgb(1, 0, 1); step = -1; break;
+    }
 }
 
 void setup()
 {
     Serial.begin(115200);
     lineInLevel  = EEPROM.read(0);
+    if (lineInLevel < 0) lineInLevel = 0;
+    if (lineInLevel > 15) lineInLevel = 15;
     lineOutLevel = EEPROM.read(2);
-    Serial.print("Line in level: ");
+    if (lineOutLevel < 13) lineOutLevel = 13;
+    if (lineOutLevel > 31) lineOutLevel = 31;
+    Serial.print("EEprom Line in level: ");
     Serial.println(lineInLevel);
+    Serial.print("EEprom Line out level: ");
+    Serial.println(lineOutLevel);
     for (int i = 0; i < 3; ++i)
     {
         pinMode(pinRGBLed[i], OUTPUT);
@@ -169,6 +182,8 @@ void setup()
         calibrateLedPlay();
         calibrateInputPressCount = 3;
         lineInLevel              = 15;
+        Serial.print("Calibration, setting Line in level: ");
+        Serial.println(lineInLevel);
     }
 
     centerButton.attach(c_centerButton);
@@ -187,21 +202,25 @@ void setup()
     sgtl5000_1.audioProcessorDisable();
     // sgtl5000_1.adcHighPassFilterDisable();
     sgtl5000_1.muteHeadphone();
-    sgtl5000_1.lineInLevel(lineInLevel); // 13 -> 0.34 Volts --> 1.18647^(6.65-n)
-    sgtl5000_1.lineOutLevel(30);         // 1.22V  --> 1.057255^(33.7-n)
     sgtl5000_1.inputSelect(AUDIO_INPUT_LINEIN);
+    sgtl5000_1.lineInLevel(lineInLevel); // 13 -> 0.34 Volts --> 1.18647^(6.65-n)
+    sgtl5000_1.lineOutLevel(lineOutLevel);         // 1.22V  --> 1.057255^(33.7-n)
+
     filterLeftStage1.octaveControl(2);
     filterLeftStage1.frequency(400);
-    filterLeftStage1.resonance(4.0);
+    filterLeftStage1.resonance(5.0);
+
     filterLeftStage2.octaveControl(2);
-    filterLeftStage2.frequency(400);
-    filterLeftStage2.resonance(4.0);
+    filterLeftStage2.frequency(800);
+    filterLeftStage2.resonance(5.0);
+
     filterRightStage1.octaveControl(2);
-    filterRightStage1.frequency(800);
-    filterRightStage1.resonance(4.0);
+    filterRightStage1.frequency(400);
+    filterRightStage1.resonance(5.0);
+
     filterRightStage2.octaveControl(2);
     filterRightStage2.frequency(800);
-    filterRightStage2.resonance(4.0);
+    filterRightStage2.resonance(5.0);
     inputFilter.setHighpass(0, 40, 1.5);
     inputFilter.setLowpass(1, 5000, 1.5);
     slapBackDelay.delay(0, 0);
@@ -247,6 +266,7 @@ void newParams(float new_f)
 }
 
 float lastPeak = 0.0;
+float lastPeakOut = 0.0;
 float lastRms  = 0.0;
 int   cntPeaks = 0;
 int   cntRms   = 0;
@@ -273,9 +293,9 @@ void checkCenterButton()
                 if (!calibrateInputPressCount)
                 {
                     EEPROM.write(0, lineInLevel);
-                    Serial.printf("Line in level written to eeprom: %f\n", lineInLevel);
+                    Serial.printf("Line in level written to eeprom: %d\n", lineInLevel);
                     EEPROM.write(2, lineOutLevel);
-                    Serial.printf("Line out level written to eeprom: %f\n", lineOutLevel);
+                    Serial.printf("Line out level written to eeprom: %df\n", lineOutLevel);
                 }
             }
 
@@ -292,10 +312,10 @@ void checkCenterButton()
     }
 }
 
-PotReader prFrequency(D6, true, 1023);
-PotReader prDivider(D2, true, 1023);
-PotReader prAlgorithm(D7, true, 1023);
-PotReader prMix(D3, true, 1023);
+PotReader prFrequency(6, true, 1023);
+PotReader prDivider(2, true, 1023);
+PotReader prAlgorithm(7, true, 1023);
+PotReader prMix(3, true, 1023);
 
 float dividers[] = {1.0, 0.5, 0.25, 0.125};
 
@@ -361,7 +381,7 @@ void loop()
     }
     if (calibrateInputPressCount)
     {
-        calibratedLedPlay();
+        calibrateLedPlay();
         if (prMix.hasNewValueAndResetState())
         {
             lineOutLevel = 13 + (32 - 13) * (prMix.read() / 1024.0);
@@ -369,6 +389,7 @@ void loop()
                 lineOutLevel = 13;
             if (lineOutLevel > 32)
                 lineOutLevel = 31;
+            Serial.printf("Lineout level set to %d\n", lineOutLevel);
             AudioNoInterrupts();
             sgtl5000_1.lineOutLevel(lineOutLevel);
             AudioInterrupts();
@@ -400,18 +421,27 @@ void loop()
             Serial.printf("Peak: %f\n", log(lastPeak) / log(2) * 6);
             if (calibrateInputPressCount)
             {
-                if (lastPeak > 0.85)
+                if (lastPeak > 0.5)
                 {
                     --lineInLevel;
                     if (lineInLevel < 0)
                         lineInLevel = 0;
-                    Serial.printf("Reducing line in level to %d", lineInLevel);
+                    Serial.printf("Reducing line in level to %d\n", lineInLevel);
                     AudioNoInterrupts();
                     sgtl5000_1.lineInLevel(lineInLevel); // 0.34 Volts --> 1.18647^(6.65-n)
                     AudioInterrupts();
                     lastPeak = 0.0;
                 }
             }
+        }
+    }
+    if (peakOut.available())
+    {
+        auto newPeak = peakOut.read();
+        if (newPeak > lastPeakOut)
+        {
+            lastPeakOut = newPeak;
+            Serial.printf("PeakOut: %f\n", log(lastPeakOut) / log(2) * 6);
         }
     }
     if (millis() >= nextAnalysis)
@@ -423,6 +453,7 @@ void loop()
         AudioProcessorUsageMaxReset();
         AudioMemoryUsageMaxReset();
         lastPeak = 0.0;
+        lastPeakOut = 0.0;
         lastRms  = 0.0;
         cntPeaks = 0;
         cntRms   = 0;

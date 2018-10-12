@@ -17,10 +17,10 @@ AudioSynthWaveformDc     dcStage1;
 AudioSynthWaveformDc     dcStage2;
 AudioFilterBiquad        inputFilter;
 AudioNoiseGate           noiseGate;
-AudioFilterStateVariable filterLeftStage1;
-AudioFilterStateVariable filterLeftStage2;
-AudioFilterStateVariable filterRightStage1;
-AudioFilterStateVariable filterRightStage2;
+AudioFilterStateVariableLimited filterLeftStage1;
+AudioFilterStateVariableLimited filterLeftStage2;
+AudioFilterStateVariableLimited filterRightStage1;
+AudioFilterStateVariableLimited filterRightStage2;
 
 AudioEffectFade fadeLeftStage1;
 AudioEffectFade fadeLeftStage2;

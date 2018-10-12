@@ -19,6 +19,7 @@ mapShapes = {
     'AudioOutputI2S': 'box',
     'AudioEffectDelay': 'tripleoctagon',
     'AudioFilterStateVariable':'diamond',
+    'AudioFilterStateVariableLimited':'diamond',
     'AudioFilterBiquad': 'diamond',
     'AudioAnalyzeRMS': 'triangle',
     'AudioAnalyzePeak': 'triangle',

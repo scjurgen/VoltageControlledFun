@@ -4,16 +4,21 @@ project(VoltageControlledFun)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 set(CMAKE_CXX_STANDARD 11)
-if (APPLE)
-    set(ARDUINO_AVR ~/Desktop/Arduino.app/Contents/Java/hardware/teensy/avr)
-endif(APPLE)
 if (UNIX)
+    message(Linux it is)
     set(ARDUINO_AVR ~/embedded)
+    if (APPLE)
+        message(APPLE it is)
+        set(ARDUINO_AVR ~/Desktop/Arduino.app/Contents/Java/hardware/teensy/avr)
+    endif(APPLE)
 endif (UNIX)
+
 
 set(SOURCE_FILES
         AudioNoiseGate.cpp
         AudioNoiseGate.h
+        filter_variable_limited.cpp
+        filter_variable_limited.h
         PotReader.h
         TapDaBeat.cpp
         TapDaBeat.h

@@ -1,7 +1,7 @@
 
 
 #include <Arduino.h>
-#include "filter_variable.h"
+#include "filter_variable_limited.h"
 #include "utility/dspinst.h"
 
 #define MULT(a, b) (multiply_32x32_rshift32_rounded(a, b) << 2)
@@ -62,8 +62,11 @@ void AudioFilterStateVariableLimited::update_variable(const int16_t* in, const i
     inputprev  = state_inputprev;
     lowpass    = state_lowpass;
     bandpass   = state_bandpass;
+    int cnt = 0;
+    int32_t currentMax = 0;
     do
     {
+        ++cnt;
         // compute fmult using control input, fcenter and octavemult
         control = *ctl++;        // signal is always 15 fractional bits
         control *= octavemult;   // octavemult range: 0 to 28671 (12 frac bits)
@@ -78,7 +81,10 @@ void AudioFilterStateVariableLimited::update_variable(const int16_t* in, const i
         if (fmult > 5378279)
             fmult = 5378279;
         fmult       = fmult << 8;
-        input       = (*in++) << 12;
+
+
+        input       = (*in++) * state_limiterFactor;
+
         lowpass     = lowpass + MULT(fmult, bandpass);
         highpass    = ((input + inputprev) >> 1) - lowpass - MULT(damp, bandpass);
         inputprev   = input;
@@ -92,9 +98,27 @@ void AudioFilterStateVariableLimited::update_variable(const int16_t* in, const i
         lowpasstmp  = signed_saturate_rshift(lowpass + lowpasstmp, 16, 13);
         bandpasstmp = signed_saturate_rshift(bandpass + bandpasstmp, 16, 13);
         highpasstmp = signed_saturate_rshift(highpass + highpasstmp, 16, 13);
-
-        // apply dynamic limiter
-
+        if (abs(bandpasstmp) > currentMax)
+            currentMax = abs(bandpasstmp);
+        if (abs(lowpasstmp) > currentMax)
+            currentMax = abs(lowpasstmp);
+        if (abs(highpasstmp) > currentMax)
+            currentMax = abs(highpasstmp);
+        if (cnt % 8 == 0)
+        {
+            if (currentMax > m_signalPower)
+                m_signalPower = currentMax - c_attack * (currentMax - m_signalPower);
+            else
+                m_signalPower = currentMax + c_release * (m_signalPower - currentMax);
+            currentMax = 0;
+            if (m_signalPower > 2000)
+            {
+                state_limiterFactor = 2000 * (1 << 12) / (int) m_signalPower;
+            } else
+            {
+                state_limiterFactor = 1 << 12;
+            }
+        }
         *lp++ = lowpasstmp;
         *bp++ = bandpasstmp;
         *hp++ = highpasstmp;
@@ -162,7 +186,6 @@ void AudioFilterStateVariableLimited::update(void)
     release(bandpass_block);
     transmit(highpass_block, 2);
     release(highpass_block);
-    return;
 }
 
 #elif defined(KINETISL)

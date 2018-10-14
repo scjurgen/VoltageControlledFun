@@ -1,4 +1,15 @@
 
+
+/*
+ * new algorithms
+ * remove slap back
+ *
+ * 0 = flip low high
+ * 1 = random
+ * 2 = mainly deep
+ * 3 = random with sine modulation beat*8
+ */
+
 #include "Arduino.h"
 #include "PotReader.h"
 #include "TapDaBeat.h"
@@ -12,6 +23,10 @@
 #include <Wire.h>
 #include <EEPROM.h>
 
+#include "filter_variable_limited.h"
+
+// #define TEST_STANDALONE
+// #define DEBUG_FILTER_VARIABLE_LIMITED
 AudioInputI2S            i2sIn;
 AudioSynthWaveformDc     dcStage1;
 AudioSynthWaveformDc     dcStage2;
@@ -27,7 +42,6 @@ AudioEffectFade fadeLeftStage2;
 AudioEffectFade fadeRightStage1;
 AudioEffectFade fadeRightStage2;
 
-AudioEffectDelay slapBackDelay;
 
 AudioMixer4 mixerFilters;
 AudioMixer4 mixerFinal;
@@ -35,16 +49,17 @@ AudioMixer4 mixerFinal;
 AudioOutputI2S   i2sOut;
 AudioAnalyzePeak peakIn;
 AudioAnalyzePeak peakOut;
-
+#ifdef TEST_STANDALONE
+AudioConnection patchCordPeak(i2sIn, 1, peakIn, 0);
+AudioConnection patchInputFilter(i2sIn, 1, inputFilter, 0);
+#else
 AudioConnection patchCordPeak(i2sIn, 0, peakIn, 0);
 AudioConnection patchInputFilter(i2sIn, 0, inputFilter, 0);
+#endif
 AudioConnection patchNoiseGate(inputFilter, 0, noiseGate, 0);
 AudioConnection patchCord2(noiseGate, 0, filterRightStage1, 0);
 AudioConnection patchCord3(noiseGate, 0, filterRightStage2, 0);
-
-AudioConnection patchCordSlapBack1(noiseGate, 0, slapBackDelay, 0);
-AudioConnection patchCordSlapback2(slapBackDelay, 0, mixerFinal, 2);
-AudioConnection patchCordSlapback3(slapBackDelay, 1, mixerFinal, 3);
+AudioConnection patchCordMixSignal(noiseGate, 0, mixerFinal, 2);
 
 AudioConnection patchCord6(dcStage1, 0, filterLeftStage1, 1);
 AudioConnection patchCord7(dcStage1, 0, filterRightStage1, 1);
@@ -69,16 +84,18 @@ AudioConnection patchCordPeakOut(mixerFinal, 0,  peakOut, 0);
 AudioControlSGTL5000 sgtl5000_1;
 
 int       pinRGBLed[3]   = {3, 5, 4};
+#ifndef TEST_STANDALONE
 int       potPins[4]     = {6, 2, 7, 3};
+
 const int c_centerButton = 2;
+#endif
+
 Bounce    centerButton;
+int lineInLevel  = 1;
+int lineOutLevel = 31;
 
-int lineInLevel  = 13;
-int lineOutLevel = 30;
-
-bool  isFlipping = false;
+bool  isFlipping = true;
 float mix        = 1.0;
-float delayGain  = 0.55;
 
 void setMix()
 {
@@ -92,10 +109,9 @@ void setMix()
         mixerFilters.gain(1, fMixEffect);
         mixerFilters.gain(2, fMixEffect);
         mixerFilters.gain(3, fMixEffect);
-        mixerFinal.gain(0, 0.5);
-        mixerFinal.gain(1, 0.5);
+        mixerFinal.gain(0, 1.0);
+        mixerFinal.gain(1, 1.0);
         mixerFinal.gain(2, fMixPure);
-        mixerFinal.gain(3, fMixPure * delayGain);
     }
     else
     {
@@ -106,37 +122,28 @@ void setMix()
         mixerFinal.gain(0, 0.0);
         mixerFinal.gain(1, 0.0);
         mixerFinal.gain(2, 1.0);
-        mixerFinal.gain(3, delayGain);
     }
 }
 
-#define ALGOCOUNT 6
+#define ALGOCOUNT 4
 
 int algorithm = 0;
 
 void setAlgorithm(int algo)
 {
     algorithm = algo;
-    if (algorithm % 2 == 1)
-    {
-        delayGain = 0.55; // we could make the delay depending on the position
-    }
-    else
-    {
-        delayGain = 0;
-    }
     setMix();
 }
 
+int calibrateInputPressCount = 0;
 void showRgb(int r, int g, int b)
 {
+#ifndef TEST_STANDALONE
     analogWrite(pinRGBLed[0], r * 4);
     analogWrite(pinRGBLed[1], g * 2);
     analogWrite(pinRGBLed[2], b * 5);
+#endif
 }
-
-int calibrateInputPressCount = 0;
-
 
 
 void calibrateLedPlay()
@@ -158,9 +165,11 @@ void calibrateLedPlay()
     }
 }
 
+
 void setup()
 {
     Serial.begin(115200);
+#ifndef TEST_STANDALONE
     lineInLevel  = EEPROM.read(0);
     if (lineInLevel < 0) lineInLevel = 0;
     if (lineInLevel > 15) lineInLevel = 15;
@@ -176,7 +185,10 @@ void setup()
         pinMode(pinRGBLed[i], OUTPUT);
         analogWrite(pinRGBLed[i], 0);
     }
+    showRgb(1, 0, 0);
+
     pinMode(c_centerButton, INPUT_PULLUP);
+    delay(100);
     if (digitalRead(c_centerButton) == 0)
     {
         calibrateLedPlay();
@@ -189,7 +201,7 @@ void setup()
     centerButton.attach(c_centerButton);
     centerButton.interval(15); // interval in ms
     pinMode(c_centerButton, INPUT_PULLUP);
-
+#endif
     AudioNoInterrupts();
     const unsigned int blocks = 44100 / 128 * 200 / 1000;
     Serial.printf("blocks: %d\n", blocks);
@@ -207,28 +219,25 @@ void setup()
     sgtl5000_1.lineOutLevel(lineOutLevel);         // 1.22V  --> 1.057255^(33.7-n)
 
     filterLeftStage1.octaveControl(2);
-    filterLeftStage1.frequency(400);
+    filterLeftStage1.frequency(100);
     filterLeftStage1.resonance(5.0);
 
     filterLeftStage2.octaveControl(2);
-    filterLeftStage2.frequency(800);
+    filterLeftStage2.frequency(200);
     filterLeftStage2.resonance(5.0);
 
     filterRightStage1.octaveControl(2);
-    filterRightStage1.frequency(400);
+    filterRightStage1.frequency(100);
     filterRightStage1.resonance(5.0);
 
     filterRightStage2.octaveControl(2);
-    filterRightStage2.frequency(800);
+    filterRightStage2.frequency(200);
     filterRightStage2.resonance(5.0);
     inputFilter.setHighpass(0, 40, 1.5);
     inputFilter.setLowpass(1, 5000, 1.5);
-    slapBackDelay.delay(0, 0);
-    slapBackDelay.delay(1, 80);
     noiseGate.setThresholdInDb(-56);
     setMix();
     AudioInterrupts();
-    showRgb(1, 0, 0);
 }
 
 elapsedMillis volmsec = 0;
@@ -273,9 +282,12 @@ int   cntRms   = 0;
 
 TapDaBeat tapDaBeat;
 
+int sweepWidth = 60000/120*8;
+uint32_t sweepStart = 0;
+
 uint32_t        nextPot = 0;
 static uint32_t longPressStart;
-
+#ifndef TEST_STANDALONE
 void checkCenterButton()
 {
     static int lastCenterButton = 1;
@@ -303,6 +315,9 @@ void checkCenterButton()
             setMix();
             longPressStart = millis();
             tapDaBeat.tap(longPressStart);
+            float msecsPerBeat = 60000 / tapDaBeat.bpm();
+            sweepWidth = static_cast<int>(3 * msecsPerBeat);
+            sweepStart = millis();
             showRgb(0, 1, 0);
         }
         else
@@ -312,30 +327,70 @@ void checkCenterButton()
     }
 }
 
+
 PotReader prFrequency(6, true, 1023);
 PotReader prDivider(2, true, 1023);
 PotReader prAlgorithm(7, true, 1023);
 PotReader prMix(3, true, 1023);
+#else
+void checkCenterButton()
+{}
+
+#endif
 
 float dividers[] = {1.0, 0.5, 0.25, 0.125};
+
+int centerFreq = 400;
+int currentFrequency = 0;
+
+void setFrequency(int f)
+{
+    if (f!=currentFrequency)
+    {
+        currentFrequency = f;
+        filterLeftStage1.frequency(f);
+        filterLeftStage2.frequency(f * 2);
+        filterRightStage1.frequency(f);
+        filterRightStage2.frequency(f * 2);
+    }
+}
+
+void setNewCenterFrequency(int f)
+{
+    centerFreq = f;
+    setFrequency(f);
+}
 
 void loop()
 {
     checkCenterButton();
     uint32_t t = millis();
+    if (algorithm == 3)
+    {
+        float phase = float(t-sweepStart) / sweepWidth;
+        if (phase>=1.0)
+            sweepStart += sweepWidth;
+        float sw = sin(M_PI*2.0*phase);
+        //Serial.printf("f=%f sw=%f phase=%f\n",centerFreq+centerFreq*sw/2,sw, phase);
+        setFrequency(centerFreq+centerFreq*sw*3/4);
+    }
     if (isFlipping)
     {
         if (t >= nextT)
         {
             float bpm       = tapDaBeat.bpm();
             float msecsPer4 = 60000 / bpm;
+#ifndef TEST_STANDALONE
             int   slot      = prDivider.read() * (sizeof(dividers) / sizeof(dividers[0])) / 1024;
+#else
+            int slot  = 2;
+#endif
             nextT           = t + msecsPer4 * dividers[slot];
             flip            = 1 - flip;
             switch (algorithm)
             {
+                case 3:
                 case 0:
-                case 1:
                 {
                     float v = float(rand() % RAND_MAX) / RAND_MAX;
                     showRgb(flip == 1 ? 1 : 0, algorithm % 2, 0);
@@ -349,28 +404,26 @@ void loop()
                     }
                 }
                 break;
-                case 2:
-                case 3:
+                case 1:
                 {
                     float v = (float(rand() % RAND_MAX) / RAND_MAX) * 2.0 - 1;
-                    showRgb(0, flip == 1 ? 1 : 0, algorithm % 2);
+                    showRgb(0, flip == 1 ? 1 : 0, 0);
                     newParams(v);
                     break;
                 }
-                case 4:
-                case 5:
+                case 2:
                 {
                     float v = (float(rand() % RAND_MAX) / RAND_MAX);
                     v       = v * v * v;
                     v       = v * 2.0f - 1.0f;
-                    showRgb(algorithm % 2, 0, flip == 1 ? 1 : 0);
+                    showRgb(0, 0, flip == 1 ? 1 : 0);
                     newParams(v);
                     break;
                 }
             }
         }
     }
-
+#ifndef TEST_STANDALONE
     prFrequency.update(t);
     prDivider.update(t);
     prAlgorithm.update(t);
@@ -405,16 +458,16 @@ void loop()
     }
     if (prFrequency.hasNewValueAndResetState())
     {
-        int f = 100 + 1900 * prFrequency.read() / 1024;
-        filterLeftStage1.frequency(f);
-        filterLeftStage2.frequency(f * 2);
-        filterRightStage1.frequency(f);
-        filterRightStage2.frequency(f * 2);
+       int f = 100 + 1900 * prFrequency.read() / 1024;
+       setNewCenterFrequency(f);
     }
+#endif
+    static float peakInCurrent;
     if (peakIn.available())
     {
         cntPeaks++;
         auto newPeak = peakIn.read();
+        peakInCurrent = log(newPeak) / log(2) * 6;
         if (newPeak > lastPeak)
         {
             lastPeak = newPeak;
@@ -435,15 +488,31 @@ void loop()
             }
         }
     }
+#ifdef DEBUG_FILTER_VARIABLE_LIMITED
+    static float peakOutCurrent;
     if (peakOut.available())
     {
         auto newPeak = peakOut.read();
+        peakOutCurrent = log(newPeak) / log(2) * 6;
         if (newPeak > lastPeakOut)
         {
             lastPeakOut = newPeak;
             Serial.printf("PeakOut: %f\n", log(lastPeakOut) / log(2) * 6);
         }
     }
+    static unsigned long voltageShow = 0;
+    if (millis() >voltageShow)
+    {
+        if (peakOutCurrent > -1)
+        if (filterLeftStage1.getSignalPower() > 2)
+        {
+            Serial.printf("%5d %5d %5d %5d pin=%5.2f  p=%5.2f\n", (int) filterLeftStage1.getSignalPower(),
+                          (int) filterLeftStage1.getStateLimitFactor(), (int) filterLeftStage2.getSignalPower(),
+                          (int) filterLeftStage2.getStateLimitFactor(), peakInCurrent, peakOutCurrent);
+        }
+        voltageShow = millis()+20;
+    }
+#endif
     if (millis() >= nextAnalysis)
     {
         nextAnalysis += 10000;

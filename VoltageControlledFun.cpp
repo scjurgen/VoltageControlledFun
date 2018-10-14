@@ -1,4 +1,15 @@
 
+
+/*
+ * new algorithms
+ * remove slap back
+ *
+ * 0 = flip low high
+ * 1 = random
+ * 2 = mainly deep
+ * 3 = random with sine modulation beat*8
+ */
+
 #include "Arduino.h"
 #include "PotReader.h"
 #include "TapDaBeat.h"
@@ -31,7 +42,6 @@ AudioEffectFade fadeLeftStage2;
 AudioEffectFade fadeRightStage1;
 AudioEffectFade fadeRightStage2;
 
-AudioEffectDelay slapBackDelay;
 
 AudioMixer4 mixerFilters;
 AudioMixer4 mixerFinal;
@@ -49,10 +59,7 @@ AudioConnection patchInputFilter(i2sIn, 0, inputFilter, 0);
 AudioConnection patchNoiseGate(inputFilter, 0, noiseGate, 0);
 AudioConnection patchCord2(noiseGate, 0, filterRightStage1, 0);
 AudioConnection patchCord3(noiseGate, 0, filterRightStage2, 0);
-
-AudioConnection patchCordSlapBack1(noiseGate, 0, slapBackDelay, 0);
-AudioConnection patchCordSlapback2(slapBackDelay, 0, mixerFinal, 2);
-AudioConnection patchCordSlapback3(slapBackDelay, 1, mixerFinal, 3);
+AudioConnection patchCordMixSignal(noiseGate, 0, mixerFinal, 2);
 
 AudioConnection patchCord6(dcStage1, 0, filterLeftStage1, 1);
 AudioConnection patchCord7(dcStage1, 0, filterRightStage1, 1);
@@ -89,7 +96,6 @@ int lineOutLevel = 31;
 
 bool  isFlipping = true;
 float mix        = 1.0;
-float delayGain  = 0.55;
 
 void setMix()
 {
@@ -106,7 +112,6 @@ void setMix()
         mixerFinal.gain(0, 1.0);
         mixerFinal.gain(1, 1.0);
         mixerFinal.gain(2, fMixPure);
-        mixerFinal.gain(3, fMixPure * delayGain);
     }
     else
     {
@@ -117,27 +122,19 @@ void setMix()
         mixerFinal.gain(0, 0.0);
         mixerFinal.gain(1, 0.0);
         mixerFinal.gain(2, 1.0);
-        mixerFinal.gain(3, delayGain);
     }
 }
 
-#define ALGOCOUNT 6
+#define ALGOCOUNT 4
 
 int algorithm = 0;
 
 void setAlgorithm(int algo)
 {
     algorithm = algo;
-    if (algorithm % 2 == 1)
-    {
-        delayGain = 0.55; // we could make the delay depending on the position
-    }
-    else
-    {
-        delayGain = 0;
-    }
     setMix();
 }
+
 int calibrateInputPressCount = 0;
 void showRgb(int r, int g, int b)
 {
@@ -238,8 +235,6 @@ void setup()
     filterRightStage2.resonance(5.0);
     inputFilter.setHighpass(0, 40, 1.5);
     inputFilter.setLowpass(1, 5000, 1.5);
-    slapBackDelay.delay(0, 0);
-    slapBackDelay.delay(1, 80);
     noiseGate.setThresholdInDb(-56);
     setMix();
     AudioInterrupts();
@@ -287,6 +282,9 @@ int   cntRms   = 0;
 
 TapDaBeat tapDaBeat;
 
+int sweepWidth = 60000/120*8;
+uint32_t sweepStart = 0;
+
 uint32_t        nextPot = 0;
 static uint32_t longPressStart;
 #ifndef TEST_STANDALONE
@@ -317,6 +315,9 @@ void checkCenterButton()
             setMix();
             longPressStart = millis();
             tapDaBeat.tap(longPressStart);
+            float msecsPerBeat = 60000 / tapDaBeat.bpm();
+            sweepWidth = static_cast<int>(3 * msecsPerBeat);
+            sweepStart = millis();
             showRgb(0, 1, 0);
         }
         else
@@ -339,10 +340,40 @@ void checkCenterButton()
 
 float dividers[] = {1.0, 0.5, 0.25, 0.125};
 
+int centerFreq = 400;
+int currentFrequency = 0;
+
+void setFrequency(int f)
+{
+    if (f!=currentFrequency)
+    {
+        currentFrequency = f;
+        filterLeftStage1.frequency(f);
+        filterLeftStage2.frequency(f * 2);
+        filterRightStage1.frequency(f);
+        filterRightStage2.frequency(f * 2);
+    }
+}
+
+void setNewCenterFrequency(int f)
+{
+    centerFreq = f;
+    setFrequency(f);
+}
+
 void loop()
 {
     checkCenterButton();
     uint32_t t = millis();
+    if (algorithm == 3)
+    {
+        float phase = float(t-sweepStart) / sweepWidth;
+        if (phase>=1.0)
+            sweepStart += sweepWidth;
+        float sw = sin(M_PI*2.0*phase);
+        //Serial.printf("f=%f sw=%f phase=%f\n",centerFreq+centerFreq*sw/2,sw, phase);
+        setFrequency(centerFreq+centerFreq*sw*3/4);
+    }
     if (isFlipping)
     {
         if (t >= nextT)
@@ -358,8 +389,8 @@ void loop()
             flip            = 1 - flip;
             switch (algorithm)
             {
+                case 3:
                 case 0:
-                case 1:
                 {
                     float v = float(rand() % RAND_MAX) / RAND_MAX;
                     showRgb(flip == 1 ? 1 : 0, algorithm % 2, 0);
@@ -373,21 +404,19 @@ void loop()
                     }
                 }
                 break;
-                case 2:
-                case 3:
+                case 1:
                 {
                     float v = (float(rand() % RAND_MAX) / RAND_MAX) * 2.0 - 1;
-                    showRgb(0, flip == 1 ? 1 : 0, algorithm % 2);
+                    showRgb(0, flip == 1 ? 1 : 0, 0);
                     newParams(v);
                     break;
                 }
-                case 4:
-                case 5:
+                case 2:
                 {
                     float v = (float(rand() % RAND_MAX) / RAND_MAX);
                     v       = v * v * v;
                     v       = v * 2.0f - 1.0f;
-                    showRgb(algorithm % 2, 0, flip == 1 ? 1 : 0);
+                    showRgb(0, 0, flip == 1 ? 1 : 0);
                     newParams(v);
                     break;
                 }
@@ -429,11 +458,8 @@ void loop()
     }
     if (prFrequency.hasNewValueAndResetState())
     {
-        int f = 100 + 1900 * prFrequency.read() / 1024;
-        filterLeftStage1.frequency(f);
-        filterLeftStage2.frequency(f * 2);
-        filterRightStage1.frequency(f);
-        filterRightStage2.frequency(f * 2);
+       int f = 100 + 1900 * prFrequency.read() / 1024;
+       setNewCenterFrequency(f);
     }
 #endif
     static float peakInCurrent;
